@@ -1,5 +1,5 @@
 """
-:Module: utils
+:Module: io_utils
 :Synopsis: routine business related to image i/o manips
 :Author: dohmatob elvis dopgima
 
@@ -9,66 +9,10 @@ import os
 import joblib
 import commands
 import tempfile
+
 import numpy as np
 import nibabel
-from ....external.nilearn import resampling
-
-
-
-def _load_vol(x):
-    """
-    Loads a single 3D volume.
-
-    """
-
-    if isinstance(x, basestring):
-        vol = nibabel.load(x)
-    elif isinstance(x, nibabel.Nifti1Image) or isinstance(
-        x, nibabel.Nifti1Pair):
-        vol = x
-    else:
-        raise TypeError(
-            ("Each volume must be string, image object, got:"
-             " %s") % type(x))
-
-    if len(vol.shape) == 4:
-        if vol.shape[-1] == 1:
-            vol = nibabel.Nifti1Image(vol.get_data()[..., 0],
-                                      vol.get_affine())
-        else:
-            raise ValueError(
-                "Each volume must be 3D, got %iD" % len(vol.shape))
-    elif len(vol.shape) != 3:
-            raise ValueError(
-                "Each volume must be 3D, got %iD" % len(vol.shape))
-
-    return vol
-
-
-def _load_specific_vol(vols, t):
-    """Utility function for loading specific volume on demand.
-
-    """
-
-    assert t >= 0
-
-    if isinstance(vols, list):
-        n_scans = len(vols)
-        vol = _load_vol(vols[t])
-    elif isinstance(vols, nibabel.Nifti1Image) or isinstance(
-        vols, nibabel.Nifti1Pair) or isinstance(vols, basestring):
-        _vols = nibabel.load(vols) if isinstance(vols, basestring) else vols
-        if len(_vols.shape) != 4:
-            raise ValueError(
-                "Expecting 4D image, got %iD" % len(_vols.shape))
-
-        n_scans = _vols.shape[3]
-        vol = nibabel.four_to_three(_vols)[t]
-    else:  # unhandled type
-        raise TypeError(
-            "imgs arg must be string, image object, or list of such.")
-
-    return vol, n_scans
+from external.nilearn import resampling
 
 
 def is_3D(image):
