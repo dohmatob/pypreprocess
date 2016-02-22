@@ -44,12 +44,16 @@ EV_SHAPE_REGX = """set fmri\(shape\d+\) (?P<shape>[0|1|3])"""
 EV_CUSTOM_FILE_REGX = """set fmri\(custom\d+?\) \"(?P<custom>.+)\""""
 
 
-def _get_abspath_relative_to_file(filename, ref_filename):
+def _get_abspath_relative_to_file(filename, ref_filename, hcp=False):
     """
     Returns the absolute path of a given filename relative to a reference
     filename (ref_filename).
 
     """
+
+    # XXX monkey patch for HCP
+    if hcp:
+        filename = filename.replace("../EVs", "./EVs")
 
     # we only handle files
     assert os.path.isfile(ref_filename)
@@ -62,22 +66,7 @@ def _get_abspath_relative_to_file(filename, ref_filename):
     return abspath
 
 
-def _insert_directory_in_file_name(filename, directory, level):
-    if not isinstance(filename, basestring):
-        return [_insert_directory_in_file_name(x, directory, level)
-                for x in filename]
-
-    filename = os.path.abspath(filename)
-    parts = filename.split("/")[1:]
-    assert level < len(parts)
-
-    head = parts[:-1 - level]
-    tail = parts[len(parts) - level - 1:-1]
-    return os.path.join("/", *tuple(head + [directory] + tail + [
-                os.path.basename(filename)]))
-
-
-def read_fsl_design_file(design_filename):
+def read_fsl_design_file(design_filename, hcp=False):
     """
     Scrapes an FSL design file for the list of contrasts.
 
@@ -102,6 +91,7 @@ def read_fsl_design_file(design_filename):
     official FSL format)
 
     """
+    design_filename = os.path.abspath(design_filename)
 
     # read design file
     design_conf = open(design_filename, 'r').read()
@@ -132,7 +122,7 @@ def read_fsl_design_file(design_filename):
 
     # lookup EV (condition) custom files
     timing_files = [_get_abspath_relative_to_file(item.group("custom"),
-                                                  design_filename)
+                                                  design_filename, hcp=hcp)
                     for item in re.finditer(EV_CUSTOM_FILE_REGX, design_conf)]
 
     # lookup the contrast values
@@ -199,7 +189,7 @@ def make_paradigm_from_timing_files(timing_files, condition_ids=None):
                 "the onsets, the second for the durations, and the "
                 "third --if present-- if for the amplitudes; got %s" % timing)
 
-    return pd.DataFrame({'name': condition_ids,
+    return pd.DataFrame({'name': _condition_ids,
                          'onset': onsets,
                          'duration': durations,
                          'modulation': amplitudes})
