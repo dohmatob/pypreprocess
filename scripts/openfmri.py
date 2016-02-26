@@ -1,5 +1,6 @@
 import os
 import glob
+import re
 import numpy as np
 import pandas as pd
 import nibabel
@@ -9,6 +10,8 @@ from pypreprocess.external.nistats.glm import FMRILinearModel
 from pypreprocess.reporting.base_reporter import ProgressReport
 from pypreprocess.reporting.glm_reporter import (generate_subject_stats_report,
                                                  group_one_sample_t_test)
+from pypreprocess.nipype_preproc_spm_utils import do_subjects_preproc
+from pypreprocess.conf_parser import import_data
 from nilearn.plotting import plot_prob_atlas, show
 import matplotlib.pyplot as plt
 
@@ -32,38 +35,41 @@ def _load_condition_keys(cfile):
         conds = [x.rstrip("\r\n") for x in fd.readlines()]
         conds = [x for x in conds if x]
         for c in conds:
-            c = c.split(" ")
-            conditions[c[1]] = c[2]
+            if "\t" in c:
+                c = c.split("\t")
+            else:
+                c = c.split(" ")
+            conditions[c[1]] = "_".join(c[2].split(" "))
     return conditions
 
 
 # meta data
-tr = 2.
 drift_model = 'Cosine'
 hrf_model = 'Canonical With Derivative'
 hfcut = 128.
 
-data_dir = os.environ.get("DATA_DIR", "/home/elvis/nilearn_data/ds001")
-output_dir = os.environ.get("OUTPUT_DIR",
-                            os.path.join(data_dir,
-                                         "pypreprocess_output/ds001"))
-condition_keys = _load_condition_keys(
-    os.path.join(data_dir, "models/model001/condition_key.txt"))
-contrast_names = _load_contrast_names(
-    os.path.join(data_dir, "models/model001/task_contrasts.txt"))
-subject_ids = map(os.path.basename,
-                  sorted(glob.glob("%s/sub*" % output_dir)))[:8]
-
-
-def do_subject_glm(subject_id):
+def do_subject_glm(subject, data_dir, output_dir):
+    subject_id = subject['subject_id']
     subject_output_dir = os.path.join(output_dir, subject_id)
+
+    scan_key_filename = os.path.join(data_dir, "scan_key.txt")
+    if not os.path.exists(scan_key_filename):
+        scan_key_filename = os.path.join(data_dir, "scan_key.txt~")
+
+    with open(scan_key_filename, "r") as fd:
+        tr = float(re.match("TR (.)",
+                            fd.readline().rstrip("\r\n")).group(1))
+    condition_keys = _load_condition_keys(
+        os.path.join(data_dir, "models/model001/condition_key.txt"))
 
     # make design matrices
     design_matrices = []
     func = []
-    anat = os.path.join(subject_output_dir, "anatomy", "whighres001_brain.nii")
-    for run_path in sorted(glob.glob(os.path.join(
-            data_dir, subject_id, "model/model001/onsets/task*"))):
+    anat = os.path.join(subject_output_dir, "anatomy",
+                        "whighres001_brain.nii")
+    for run_path, run_func in zip(sorted(glob.glob(os.path.join(
+            data_dir, subject_id, "model/model001/onsets/task*"))),
+                                  subject.func):
         run_id = os.path.basename(run_path)
         run_func = glob.glob(os.path.join(subject_output_dir, "BOLD", run_id,
                                           "wrbold*.nii"))
@@ -84,7 +90,8 @@ def do_subject_glm(subject_id):
 
         frametimes = np.linspace(0, (n_scans - 1) * tr, n_scans)
         paradigm = pd.DataFrame(dict(name=conditions, onset=onset,
-                                     duration=duration, modulation=modulation))
+                                     duration=duration,
+                                     modulation=modulation))
         design_matrix = make_design_matrix(frametimes, paradigm,
                                            hrf_model=hrf_model,
                                            drift_model=drift_model,
@@ -156,22 +163,40 @@ def do_subject_glm(subject_id):
     # ProgressReport().finish_dir(subject_output_dir)
 
     return dict(subject_id=subject_id, mask=mask_path,
-                effects_maps=effects_maps, z_maps=z_maps, contrasts=contrasts)
+                effects_maps=effects_maps, z_maps=z_maps,
+                contrasts=contrasts)
 
 
-# first level GLM
-mem = Memory(os.path.join(output_dir, "cache_dir"))
-n_jobs = min(n_jobs, len(subject_ids))
-first_levels = Parallel(n_jobs=n_jobs)(delayed(mem.cache(do_subject_glm))(
-    subject_id) for subject_id in subject_ids)
+def do_dataset(data_dir, n_jobs=1):
+    ds = os.path.basename(data_dir)
+    output_dir = os.path.join("/storage/workspace/elvis/openfmri/", ds)
+    subjects, params = import_data("scripts/openfmri.ini", dataset_dir=data_dir,
+                                   output_dir=output_dir, n_jobs=str(n_jobs))
+    subjects = do_subjects_preproc(subjects, **params)
 
-# run second-level GLM
-group_zmaps = group_one_sample_t_test(
-    [subject_data["mask"] for subject_data in first_levels],
-    [subject_data["effects_maps"] for subject_data in first_levels],
-    first_levels[0]["contrasts"],
-    output_dir, threshold=2.)
-plot_prob_atlas([zmap for zmap in group_zmaps.values() if "_minus_" in zmap],
-                threshold=1.2, view_type="filled_contours")
-plt.savefig("group_zmaps.png")
-show()
+    # first level GLM
+    mem = Memory(os.path.join(output_dir, "cache_dir"))
+    n_jobs = min(n_jobs, len(subjects))
+    first_levels = Parallel(n_jobs=n_jobs)(
+        delayed(mem.cache(do_subject_glm))(
+            subject, data_dir, output_dir) for subject in subjects)
+
+    # run second-level GLM
+    group_zmaps = group_one_sample_t_test(
+        [subject_data["mask"] for subject_data in first_levels],
+        [subject_data["effects_maps"] for subject_data in first_levels],
+        first_levels[0]["contrasts"],
+        output_dir, threshold=2.)
+                                      
+
+for data_dir in sorted(glob.glob("/storage/data/openfmri/ds114")):
+    try:
+        do_dataset(data_dir, n_jobs=n_jobs)
+    except:
+        raise
+        continue
+                                      
+# plot_prob_atlas([zmap for zmap in group_zmaps.values() if "_minus_" in zmap],
+#                 threshold=1.2, view_type="filled_contours")
+# plt.savefig("group_zmaps.png")
+# show()
